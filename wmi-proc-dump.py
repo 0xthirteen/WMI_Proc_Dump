@@ -252,10 +252,10 @@ def create_dump(options):
         if dump_file:
             print(f'  Process Dump written to {dump_file} on {address}')
             
-            # impacket doesn't like this for some reason
             if options.rename:
-                print('  Rename dmp file is broken, keeping original name')
-            #     rename_dump_file(options, dump_file)
+                new_name = rename_dump_file(options, dump_file)
+                if new_name is not None:
+                    dump_file = new_name
 
             if options.download:
                 download_over_smb(options, dump_file)
@@ -268,6 +268,7 @@ def create_dump(options):
             wmi.close()
 
 def rename_dump_file(options, old_name):
+    # we likely wont be connected to CIMv2
     target_namespace = '//./root/CIMv2'
     domain, username, password, address = parse_target(options.target)
 
@@ -282,11 +283,10 @@ def rename_dump_file(options, old_name):
         wmi.connect()
         print(f'Renaming {old_name} to {new_name}')
         try:
-            iEnumWbemClassObject = wmi.iWbemServices.ExecQuery(f"Select * from CIM_DataFile where Name = '{oldname_escaped}'")
-            obj = iEnumWbemClassObject.Next(0xffffffff, 1)[0]
-            return_value = obj.Rename(newname_escaped)
-            print(f"Rename returned: {return_value}")
-            return
+            obj, _ = wmi.iWbemServices.GetObject(f"CIM_DataFile.Name='{oldname_escaped}'")
+            obj.Rename(newname_escaped)
+            wmi.close()
+            return new_name
         except Exception as e:
             if str(e).find('S_FALSE') < 0:
                 print(e)

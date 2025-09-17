@@ -214,11 +214,13 @@ def get_id_from_name(options):
 def create_dump(options):
     pid = None
     target_namespace = '//./root/Microsoft/Windows/ManagementTools'
+    if options.cimv2:
+        target_namespace = '//./root/CIMv2'
     domain, username, password, address = parse_target(options.target)
     dump_file = None
     out_name = f'{address}-process-{pid}.dmp'
     try:
-        print('Connecting to ManagementTools...')
+        print(f'Connecting to {target_namespace}...')
         wmi = WMI(address, target_namespace, username, password, domain, options.hashes, options.aesKey, options.k, options.dc_ip)
         wmi.connect()
 
@@ -236,6 +238,7 @@ def create_dump(options):
             
             object_path = f"MSFT_MTProcess.ProcessId={pid}"
             inParams = {}
+            print(f'Calling create dump on PID {pid}')
             result = wmi.iWbemServices.ExecMethod(object_path, "CreateDump", inParams)
             
             properties = result.getProperties()
@@ -303,6 +306,7 @@ def main():
     parser.add_argument('-proc', action='store', help='process name to dump')
     parser.add_argument('-rename', action='store', help='rename file after dump')
     parser.add_argument('-download', action='store_true', help='download file over SMB')
+    parser.add_argument('-cimv2', action='store_true', help='Connect to CIMv2 instead of management tools namespace')
     group = parser.add_argument_group('authentication')
     group.add_argument('-hashes', action="store", metavar="LMHASH:NTHASH", help='NTLM hashes, format is LMHASH:NTHASH')
     group.add_argument('-no-pass', action="store_true", help='don\'t ask for password (useful for -k)')

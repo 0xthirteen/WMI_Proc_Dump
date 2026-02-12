@@ -2,6 +2,7 @@
 import os
 import sys
 import time
+import ntpath
 import tempfile
 import argparse
 import logging
@@ -169,7 +170,7 @@ def download_over_smb(options, file_path):
         share = ''
         remote_path = file_path.lstrip('\\').lstrip('/')
 
-    path, filename = os.path.split(remote_path)
+    _, filename = ntpath.split(remote_path)
     local_path = os.path.join('.', filename)
 
     if smb.connect():
@@ -279,9 +280,9 @@ def rename_dump_file(options, old_name):
     target_namespace = '//./root/CIMv2'
     domain, username, password, address = parse_target(options.target)
 
-    old_dir = os.path.dirname(old_name)
-    old_fn = os.path.basename(old_name)
-    new_name = os.path.join(old_dir, options.rename)
+    old_dir = ntpath.dirname(old_name)
+    old_fn = ntpath.basename(old_name)
+    new_name = ntpath.join(old_dir, options.rename)
     oldname_escaped = old_name.replace('\\', '\\\\')
     newname_escaped = new_name.replace('\\', '\\\\')
     try:

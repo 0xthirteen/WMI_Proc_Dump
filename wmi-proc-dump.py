@@ -162,15 +162,19 @@ def download_over_smb(options, file_path):
     domain, username, password, address = parse_target(options.target)
     smb = SMB(address, username, password, domain, options.hashes, options.aesKey, options.k, options.dc_ip)
 
-    drive, path_filename = os.path.splitdrive(file_path)
-    path, filename = os.path.split(path_filename)
+    if len(file_path) >= 2 and file_path[1] == ':':
+        share = file_path[0] + '$'
+        remote_path = file_path[2:].lstrip('\\').lstrip('/')
+    else:
+        share = ''
+        remote_path = file_path.lstrip('\\').lstrip('/')
 
+    path, filename = os.path.split(remote_path)
     local_path = os.path.join('.', filename)
 
-    u_drive = drive.replace(':', '$')
     if smb.connect():
         print(f'  Downloading {file_path}')
-        raw_data = smb.read_file_raw(u_drive, path_filename)
+        raw_data = smb.read_file_raw(share, remote_path)
         with open(local_path, 'wb') as file:
             file.write(raw_data)
 

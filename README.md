@@ -13,7 +13,10 @@ options:
   -pid PID              process ID to dump
   -proc PROC            process name to dump
   -rename RENAME        rename file after dump
-  -download             download file over SMB
+  -download             download file over SMB or WMI
+  -dlproto DLPROTO      specify download protocol SMB or WMI
+  -cleanup              remove file after download
+  -cimv2                Connect to CIMv2 instead of management tools namespace
 
 authentication:
   -hashes LMHASH:NTHASH
